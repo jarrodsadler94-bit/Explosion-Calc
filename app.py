@@ -1,107 +1,117 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
+from scipy.optimize import fsolve
 
 # --- Page Configuration ---
 st.set_page_config(page_title="VCE Overpressure Calculator", layout="wide")
 
-st.title("💥 Vapour Cloud Explosion (VCE) Calculator")
-st.markdown("Estimate overpressure effects using TNT-Equivalent and Baker-Strehlow-Tang (BST) models. Inputs are combined to evaluate the total explosion energy.")
+st.title("💥 Vapour Cloud Explosion Calculator")
+st.markdown("Estimate overpressure effects using the continuous **Kinney-Graham Surface Burst** equation.")
 
-# --- Front and Centre Inputs ---
+# --- Gas Database ---
+GAS_DB = {
+    "Hydrogen (H2)": {"density": 0.08988, "hoc": 141.58},
+    "Propane (C3H8)": {"density": 2.0098, "hoc": 50.33},
+    "Methane (CH4)": {"density": 0.68, "hoc": 50.0},
+    "Custom": {"density": 1.0, "hoc": 46.0}
+}
+
+# --- Inputs ---
 st.header("1. Define Explosion Parameters")
-
 col1, col2, col3 = st.columns(3)
+
+def get_vapour_inputs(suffix, default_gas, default_vol):
+    gas_choice = st.selectbox(f"Gas Preset {suffix}", list(GAS_DB.keys()), index=list(GAS_DB.keys()).index(default_gas), key=f"gas{suffix}")
+    is_custom = gas_choice == "Custom"
+    
+    input_mode = st.radio(f"Input Method {suffix}", ["Volume & Density", "Mass"], key=f"mode{suffix}", horizontal=True)
+    if input_mode == "Volume & Density":
+        v = st.number_input(f"Volume {suffix} (m³)", value=default_vol, step=0.01, format="%.5f", key=f"v{suffix}")
+        d = st.number_input(f"Density {suffix} (kg/m³)", value=GAS_DB[gas_choice]["density"], disabled=not is_custom, format="%.5f", key=f"den{suffix}")
+        m = v * d
+        st.caption(f"Calculated Mass: **{m:.5f} kg**")
+    else:
+        m = st.number_input(f"Mass {suffix} (kg)", value=0.0, step=0.1, format="%.5f", key=f"m{suffix}")
+            
+    h = st.number_input(f"Heat of Combustion {suffix} (MJ/kg)", value=GAS_DB[gas_choice]["hoc"], disabled=not is_custom, key=f"h{suffix}")
+    return m, h
 
 with col1:
     st.subheader("Vapour 1")
-    input_mode1 = st.radio("Input Method", ["Mass", "Volume & Density"], key="mode1", horizontal=True)
-    
-    if input_mode1 == "Mass":
-        mass1 = st.number_input("Mass (kg)", value=1000.0, step=100.0, key="m1")
-    else:
-        vol1 = st.number_input("Volume (m³)", value=500.0, step=10.0, key="v1")
-        den1 = st.number_input("Density (kg/m³)", value=2.0, step=0.1, key="d1")
-        mass1 = vol1 * den1
-        st.caption(f"Calculated Mass: **{mass1:.1f} kg**")
-        
-    hoc1 = st.number_input("Heat of Combustion (MJ/kg)", value=46.0, key="h1")
-    react1 = st.selectbox("Reactivity", ["Low", "Medium", "High"], index=1, key="r1")
+    mass1, hoc1 = get_vapour_inputs("1", "Hydrogen (H2)", 0.0326)
 
 with col2:
-    st.subheader("Vapour 2 (Optional)")
-    input_mode2 = st.radio("Input Method", ["Mass", "Volume & Density"], key="mode2", horizontal=True)
-    
-    if input_mode2 == "Mass":
-        mass2 = st.number_input("Mass (kg)", value=0.0, step=100.0, key="m2")
-    else:
-        vol2 = st.number_input("Volume (m³)", value=0.0, step=10.0, key="v2")
-        den2 = st.number_input("Density (kg/m³)", value=1.5, step=0.1, key="d2")
-        mass2 = vol2 * den2
-        st.caption(f"Calculated Mass: **{mass2:.1f} kg**")
-        
-    hoc2 = st.number_input("Heat of Combustion (MJ/kg)", value=50.0, key="h2")
-    react2 = st.selectbox("Reactivity", ["Low", "Medium", "High"], index=0, key="r2")
+    st.subheader("Vapour 2")
+    mass2, hoc2 = get_vapour_inputs("2", "Propane (C3H8)", 0.13363)
 
 with col3:
     st.subheader("Site & Environment")
-    distance_target = st.number_input("Target Evaluation Distance (m)", value=50.0, step=1.0)
-    congestion = st.selectbox("Obstacle Density / Congestion", ["Low", "Medium", "High"], index=1)
-    yield_pct = st.slider("TNT Yield Factor (%)", 1, 20, 5) / 100.0
+    yield_pct = st.number_input("TNT Yield Factor (%)", value=3.0, step=1.0) / 100.0
+    p_ambient = st.number_input("Ambient Pressure (kPa)", value=101.3, step=0.1)
 
-# --- Mixture Logic ---
-total_mass = mass1 + mass2
+# --- TNT Equivalency Logic ---
+TNT_ENERGY_DENSITY = 4.68  # MJ/kg
 
-if total_mass > 0:
-    weighted_hoc = ((mass1 * hoc1) + (mass2 * hoc2)) / total_mass
-else:
-    weighted_hoc = 0
+tnt_eq1 = (mass1 * hoc1 * yield_pct) / TNT_ENERGY_DENSITY if mass1 > 0 else 0
+tnt_eq2 = (mass2 * hoc2 * yield_pct) / TNT_ENERGY_DENSITY if mass2 > 0 else 0
+total_tnt_eq = tnt_eq1 + tnt_eq2
+w_third = total_tnt_eq**(1/3) if total_tnt_eq > 0 else 0
 
-reactivity_levels = {"Low": 1, "Medium": 2, "High": 3}
-max_react_val = max(reactivity_levels[react1] if mass1 > 0 else 0, 
-                    reactivity_levels[react2] if mass2 > 0 else 0)
-
-reverse_reactivity = {1: "Low", 2: "Medium", 3: "High", 0: "Low"}
-overall_reactivity = reverse_reactivity[max_react_val]
-
-# --- Calculation Engine ---
-def calculate_metrics(d, m_total, h_avg, react, cong, y_pct):
-    if m_total <= 0 or d <= 0:
-        return 0, 0
-        
-    tnt_energy_density = 4.68  # MJ/kg
-    p_atm = 101325  # Pa
+# --- Kinney-Graham Pure Math Engine ---
+def calc_scaled_pressure(z_surface):
+    """Calculates scaled overpressure (Ps/Pa) for a surface burst using the doubled-mass assumption."""
+    # Convert surface Z to an effective free-air Z by doubling the mass
+    z_eff = z_surface / (2.0**(1/3))
     
-    # 1. TNT Method
-    energy_tnt_mj = m_total * h_avg * y_pct
-    tnt_mass_eq = energy_tnt_mj / tnt_energy_density
-    z = d / (tnt_mass_eq**(1/3)) if tnt_mass_eq > 0 else 0
+    # Kinney-Graham formula
+    term1 = 1 + (z_eff / 4.5)**2
+    term2 = np.sqrt(1 + (z_eff / 0.048)**2)
+    term3 = np.sqrt(1 + (z_eff / 0.32)**2)
+    term4 = np.sqrt(1 + (z_eff / 1.35)**2)
     
-    if z > 0:
-        p_tnt = ((80.8 / z) + (114 / z**2) + (141 / z**3)) * 2 # Surface burst reflection
-    else:
-        p_tnt = 0
+    return 808 * (term1) / (term2 * term3 * term4)
 
-    # 2. BST Method
-    energy_total_j = m_total * h_avg * 1e6
-    sachs_r = d * (p_atm / energy_total_j)**(1/3) if energy_total_j > 0 else 0
-    
-    mach_map = {
-        ("High", "High"): 5.2, ("High", "Medium"): 2.0, ("High", "Low"): 0.5,
-        ("Medium", "High"): 1.6, ("Medium", "Medium"): 0.6, ("Medium", "Low"): 0.2,
-        ("Low", "High"): 0.5, ("Low", "Medium"): 0.2, ("Low", "Low"): 0.1
-    }
-    mach = mach_map[(react, cong)]
-    
-    if sachs_r > 0:
-        ratio = (0.15 * (mach**1.2)) / (sachs_r**1.1)
-        max_ratio = (mach**2) * 1.5 
-        ratio = min(ratio, max_ratio)
-        p_bst = ratio * (p_atm / 1000) # Convert to kPa
-    else:
-        p_bst = 0
-        
-    return p_tnt, p_bst
+def solve_for_z(target_p_scaled):
+    """Uses SciPy to mathematically solve for Z given a target scaled pressure."""
+    if target_p_scaled <= 0: return 0
+    # Lambda function: find where calc_scaled_pressure(Z) - target_p_scaled = 0
+    func = lambda z: calc_scaled_pressure(z) - target_p_scaled
+    # Start the solver guessing at Z=10
+    z_solution = fsolve(func, 10.0)[0]
+    return z_solution
 
-# Generate arrays for plotting and threshold interpolation
-calc_distances = np.
+# --- UI Layout ---
+st.divider()
+st.header("2. Analysis Results")
+
+m1, m2, m3 = st.columns(3)
+m1.metric("Vapour 1 TNT Eq.", f"{tnt_eq1:.5f} kg")
+m2.metric("Vapour 2 TNT Eq.", f"{tnt_eq2:.5f} kg")
+m3.metric("TOTAL TNT Equivalent (W)", f"{total_tnt_eq:.5f} kg", delta_color="inverse")
+
+st.write("") 
+
+st.subheader("Spatial Separation Distances (Continuous Formula)")
+st.markdown("Calculated using the Kinney-Graham surface burst equation and an algorithmic solver (no lookup tables).")
+
+# Dynamic Threshold Calculations
+thresholds_kpa = [70, 21, 7]
+table_data = []
+
+for p in thresholds_kpa:
+    scaled_p = p / p_ambient
+    
+    # Let the solver find the exact Z value
+    z_val = solve_for_z(scaled_p)
+    r_val = z_val * w_third
+    
+    table_data.append({
+        "Overpressure Threshold": f"{p} kPa",
+        "Scaled Overpressure (Ps/Pa)": f"{scaled_p:.3f}",
+        "Exact Z value (m/kg^1/3)": f"{z_val:.3f}",
+        "Exact Separation Distance (m)": f"{r_val:.3f}"
+    })
+
+st.table(pd.DataFrame(table_data))
